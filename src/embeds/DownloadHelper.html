@@ -1,0 +1,61 @@
+<!--
+  BE YOU · Download helper
+  Paste into an "Embed HTML" element on the Full Chart page and give it the
+  ID "downloadHelper". Make it tiny (e.g. 10 x 10 px) but do NOT set it to
+  hidden or collapsed on load: Wix may not load a hidden embed, and then it
+  can't receive the PDF.
+-->
+<!DOCTYPE html>
+<html>
+<body style="margin:0">
+<script>
+  // Tell the page we're listening, now and whenever it asks (covers either
+  // side loading first).
+  function sayReady() {
+    window.parent.postMessage({ type: "downloadHelperReady" }, "*");
+  }
+
+  // The PDF arrives as base64 and is saved from a same-origin blob: link, so
+  // the browser downloads it with the right file name instead of trying to
+  // open a pop-up (which it would block, since the click happened on the page).
+  function downloadBase64(base64, fileName) {
+    var binary = atob(base64);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    var url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = fileName || "chart.pdf";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+  }
+
+  window.addEventListener("message", function (event) {
+    var data = event.data || {};
+    if (data.type === "downloadHelperPing") {
+      sayReady();
+      return;
+    }
+    if (data.type !== "downloadFile") return;
+
+    try {
+      if (data.base64) {
+        downloadBase64(data.base64, data.fileName);
+      } else if (data.url) {
+        window.open(data.url, "_blank");
+      } else {
+        throw new Error("No file data");
+      }
+      window.parent.postMessage({ type: "downloadDone" }, "*");
+    } catch (e) {
+      window.parent.postMessage({ type: "downloadError", message: String(e && e.message || e) }, "*");
+    }
+  });
+
+  sayReady();
+</script>
+</body>
+</html>

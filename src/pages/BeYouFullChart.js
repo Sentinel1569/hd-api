@@ -17,7 +17,7 @@
 import wixWindowFrontend from "wix-window-frontend";
 import wixLocationFrontend from "wix-location-frontend";
 import { session } from "wix-storage-frontend";
-import { generateChartPdf } from "backend/chartPdf.jsw";
+import { generateChartPdf } from "backend/chartPdf.web";
 
 const CHART_STORAGE_KEY = "beYouHumanDesignChart";
 
@@ -881,40 +881,87 @@ function renderChart(chart) {
 
 /* =====================================================================
    11 · DOWNLOAD PDF BUTTON
-   Calls the backend to generate a branded PDF, then relays the resulting
-   file URL to the hidden #downloadHelper HTML element, which is the one
-   that can actually force the browser download (page code itself has no
-   DOM access, same reason the bodygraph uses postMessage).
+   The backend returns the PDF as base64; the hidden #downloadHelper HTML
+   element turns it into a file download (page code has no DOM access,
+   same reason the bodygraph uses postMessage). The PDF is built once per
+   visit and starts building as soon as the mouse is over the button.
    ===================================================================== */
 
 function wirePdfDownload(chartPayload) {
     const btn = findElement("#downloadPdfChartButton", "onClick"); // confirm this matches your button's actual ID
     if (!btn) return;
 
+    const helper = findElement("#downloadHelper", "postMessage");
     const originalLabel = btn.label;
+    let helperReady = false;
+    let pendingFile = null;
+    let pdfRequest = null;
+
+    if (helper) {
+        helper.onMessage((event) => {
+            const type = event.data && event.data.type;
+            if (type === "downloadHelperReady") {
+                helperReady = true;
+                if (pendingFile) {
+                    helper.postMessage(pendingFile);
+                    pendingFile = null;
+                }
+            } else if (type === "downloadError") {
+                console.error("Download failed:", event.data.message);
+                if ("label" in btn) btn.label = "Download failed – try again";
+            }
+        });
+        // The helper announces itself on load; this covers it loading first.
+        helper.postMessage({ type: "downloadHelperPing" });
+    }
+
+    const requestPdf = () => {
+        if (!pdfRequest) {
+            pdfRequest = generateChartPdf(chartPayload).then(
+                (result) => {
+                    if (!result || !result.success) pdfRequest = null; // allow a retry
+                    return result;
+                },
+                (error) => {
+                    pdfRequest = null;
+                    throw error;
+                }
+            );
+        }
+        return pdfRequest;
+    };
+
+    if (typeof btn.onMouseIn === "function") {
+        btn.onMouseIn(() => { requestPdf().catch(() => {}); });
+    }
 
     btn.onClick(async () => {
+        if (!helper) {
+            console.error("Add the #downloadHelper HTML element to this page to enable PDF downloads.");
+            return;
+        }
         try {
             if ("label" in btn) btn.label = "Preparing your PDF…";
             btn.disable();
 
-            const result = await generateChartPdf(chartPayload);
-
-            if (result && result.success && result.fileUrl) {
-                const helper = findElement("#downloadHelper", "postMessage");
-                if (helper) {
-                    helper.postMessage({ type: "downloadFile", url: result.fileUrl, fileName: result.fileName });
+            const result = await requestPdf();
+            if (result && result.success && result.base64) {
+                const file = { type: "downloadFile", base64: result.base64, fileName: result.fileName };
+                if (helperReady) {
+                    helper.postMessage(file);
                 } else {
-                    // No helper element on the page: open the PDF in this tab instead.
-                    wixLocationFrontend.to(result.fileUrl);
+                    pendingFile = file; // sent as soon as the helper says it's ready
+                    helper.postMessage({ type: "downloadHelperPing" });
                 }
+                if ("label" in btn) btn.label = originalLabel;
             } else {
                 console.error("PDF generation failed:", result && result.error);
+                if ("label" in btn) btn.label = "Download failed – try again";
             }
         } catch (err) {
             console.error("Download click error:", err);
+            if ("label" in btn) btn.label = "Download failed – try again";
         } finally {
-            if ("label" in btn) btn.label = originalLabel;
             btn.enable();
         }
     });
