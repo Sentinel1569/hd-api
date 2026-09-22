@@ -6,7 +6,7 @@ Copy each file's full contents into the matching place in the Wix editor, replac
 |---|---|---|
 | 1 · Form | `src/pages/BeYouForm.js` | Page code of the form page |
 | 2 · Lightbox | `src/pages/BeYouChartLightbox.js` | Code of the **BE YOU CHART** lightbox |
-| 3 · Full chart | `src/pages/BeYouFullChart.js` | Page code of `/be-you-full-chart` |
+| 3 · Full chart | `src/pages/BeYouFullChart.js` | Page code of `/be-you-full-chart-2` |
 | 4 · Backend | `src/backend/humanDesign.web.js` | `backend/humanDesign.web.js` |
 | PDF backend | `src/backend/chartPdf.web.js` | `backend/chartPdf.web.js` (new file; delete the old `chartPdf.jsw`) |
 | 5 · Bodygraph | `src/embeds/BeYouBodygraph.html` | The `#bodygraphImage` HTML embed (Code option) |

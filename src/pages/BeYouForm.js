@@ -14,7 +14,7 @@ import { generateHumanDesignChart, warmUp } from "backend/humanDesign.web";
 const DEBUG = false;
 
 const LIGHTBOX_NAME = "BE YOU CHART";
-const FULL_CHART_PATH = "/be-you-full-chart";
+const FULL_CHART_PATH = "/be-you-full-chart-2";
 const CHART_STORAGE_KEY = "beYouHumanDesignChart";
 // Set to false if visitors with a single name should be able to submit.
 const LAST_NAME_REQUIRED = true;

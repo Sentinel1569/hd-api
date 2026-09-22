@@ -7,7 +7,7 @@ import wixWindowFrontend from "wix-window-frontend";
 import wixSiteFrontend from "wix-site-frontend";
 import { session } from "wix-storage-frontend";
 
-const FULL_CHART_PATH = "/be-you-full-chart";
+const FULL_CHART_PATH = "/be-you-full-chart-2";
 const CHART_STORAGE_KEY = "beYouHumanDesignChart";
 
 $w.onReady(function () {
