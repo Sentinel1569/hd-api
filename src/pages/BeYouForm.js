@@ -6,6 +6,7 @@
 
 import wixWindowFrontend from "wix-window-frontend";
 import wixSiteFrontend from "wix-site-frontend";
+import wixLocationFrontend from "wix-location-frontend";
 import { session } from "wix-storage-frontend";
 import { generateHumanDesignChart, warmUp } from "backend/humanDesign.web";
 
@@ -113,7 +114,11 @@ async function generateChart() {
 
         $w("#chartResult").hide();
         setGenerating(false);
-        await wixWindowFrontend.openLightbox(LIGHTBOX_NAME, chart);
+        // The lightbox closes with { goToFullChart: true } when its button is
+        // clicked; navigating from here is reliable, whereas code inside a
+        // closing lightbox can be stopped before it navigates.
+        const result = await wixWindowFrontend.openLightbox(LIGHTBOX_NAME, chart);
+        if (result && result.goToFullChart) wixLocationFrontend.to(FULL_CHART_PATH);
     } catch (error) {
         console.error("Chart request failed:", error);
         showMessage("Something went wrong while generating your chart. Please try again.");

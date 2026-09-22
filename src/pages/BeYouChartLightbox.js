@@ -4,7 +4,6 @@
 // =====================================================================
 
 import wixWindowFrontend from "wix-window-frontend";
-import wixLocationFrontend from "wix-location-frontend";
 import wixSiteFrontend from "wix-site-frontend";
 import { session } from "wix-storage-frontend";
 
@@ -49,8 +48,8 @@ $w.onReady(function () {
         } catch (error) {
             console.warn("Couldn't save the chart to session storage:", error);
         }
-        wixWindowFrontend.lightbox.close();
-        wixLocationFrontend.to(FULL_CHART_PATH);
+        // The form page does the navigation once the lightbox has closed.
+        wixWindowFrontend.lightbox.close({ goToFullChart: true });
     });
 });
 
