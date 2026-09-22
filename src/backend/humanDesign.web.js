@@ -7,6 +7,8 @@ import {
   computeHouses
 } from "free-human-design";
 import tzlookup from "tz-lookup";
+import { fetch } from "wix-fetch";
+import { getSecretValue } from "wix-secrets-backend";
 
 // ============================================================================
 // BE YOU · Human Design backend
@@ -310,7 +312,7 @@ function computeHumanDesign({ date, time, timezone, lat, lng }) {
  *   colorMode?: "standard"|"monochrome", brandColor?: string
  * }} birthData
  */
-export const generateHumanDesignChart = webMethod(Permissions.Anyone, (birthData) => {
+function buildChart(birthData) {
   const input = birthData || {};
 
   const isoDate = toIsoDate(input.date);
@@ -374,6 +376,56 @@ export const generateHumanDesignChart = webMethod(Permissions.Anyone, (birthData
       success: false,
       error: "We couldn't calculate that chart. Please double-check the birth details and try again."
     };
+  }
+}
+
+export const generateHumanDesignChart = webMethod(Permissions.Anyone, buildChart);
+
+// ---------------------------------------------------------------------------
+// CRM WEBHOOK
+// The form page calls this right after showing the chart, without waiting,
+// so the visitor never waits on the CRM. The chart is recalculated here
+// (~13 ms) rather than trusting values sent from the browser.
+// Store the webhook address in Wix Secrets Manager as CRM_WEBHOOK_URL.
+// ---------------------------------------------------------------------------
+
+let webhookUrl = null;
+
+export const sendChartToCrm = webMethod(Permissions.Anyone, async (birthData) => {
+  const result = buildChart(birthData);
+  if (!result.success) return { success: false, error: result.error };
+  const chart = result.chart;
+  if (!chart.email) return { success: false, error: "A valid email is required." };
+
+  const payload = {
+    first_name: chart.firstName,
+    last_name: chart.lastName,
+    email: chart.email,
+    date_of_birth: chart.birthDate,
+    time_of_birth: chart.birthTime,
+    place_of_birth: chart.birthPlace,
+    hd_type: chart.type,
+    // "Emotional (Solar Plexus)" -> "Emotional", matching the CRM's plain labels.
+    hd_authority: String(chart.authority || "").replace(/\s*\(.*\)\s*$/, "").trim(),
+    hd_profile: chart.profile,
+    chart_generated: true
+  };
+
+  try {
+    if (!webhookUrl) webhookUrl = await getSecretValue("CRM_WEBHOOK_URL");
+    const response = await fetch(webhookUrl, {
+      method: "post",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      console.error("CRM webhook rejected the lead:", response.status, await response.text());
+      return { success: false, error: `Webhook responded ${response.status}` };
+    }
+    return { success: true };
+  } catch (error) {
+    console.error("CRM webhook failed:", error?.message || error);
+    return { success: false, error: "Couldn't reach the CRM webhook." };
   }
 });
 

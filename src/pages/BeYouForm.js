@@ -8,7 +8,7 @@ import wixWindowFrontend from "wix-window-frontend";
 import wixSiteFrontend from "wix-site-frontend";
 import wixLocationFrontend from "wix-location-frontend";
 import { session } from "wix-storage-frontend";
-import { generateHumanDesignChart, warmUp } from "backend/humanDesign.web";
+import { generateHumanDesignChart, sendChartToCrm, warmUp } from "backend/humanDesign.web";
 
 // Flip to true only while debugging.
 const DEBUG = false;
@@ -84,17 +84,19 @@ async function generateChart() {
     setGenerating(true);
     showMessage("Generating your Human Design chart…");
 
+    const birthDetails = {
+        firstName,
+        lastName,
+        email,
+        date,
+        time,
+        lat,
+        lng,
+        birthPlace: birthPlace.formatted || [birthPlace.city, birthPlace.country].filter(Boolean).join(", ")
+    };
+
     try {
-        const response = await generateHumanDesignChart({
-            firstName,
-            lastName,
-            email,
-            date,
-            time,
-            lat,
-            lng,
-            birthPlace: birthPlace.formatted || [birthPlace.city, birthPlace.country].filter(Boolean).join(", ")
-        });
+        const response = await generateHumanDesignChart(birthDetails);
 
         if (!response?.success || !response.chart) {
             showMessage(response?.error || "We couldn't generate your chart. Please try again.");
@@ -103,6 +105,11 @@ async function generateChart() {
 
         const chart = response.chart;
         if (DEBUG) console.log("Chart:", chart);
+
+        // Send the lead to the CRM in the background; the visitor doesn't wait for it.
+        sendChartToCrm(birthDetails)
+            .then((result) => { if (!result?.success) console.warn("CRM:", result?.error); })
+            .catch((error) => console.warn("CRM:", error));
 
         // Saved here as well as in the lightbox, so the full chart page still
         // works if the visitor closes the lightbox and goes there another way.
