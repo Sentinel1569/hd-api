@@ -15,7 +15,6 @@
    ===================================================================== */
 
 import wixWindowFrontend from "wix-window-frontend";
-import wixLocationFrontend from "wix-location-frontend";
 import { session } from "wix-storage-frontend";
 import { generateChartPdf } from "backend/chartPdf.web";
 
