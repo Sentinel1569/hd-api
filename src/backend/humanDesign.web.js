@@ -8,7 +8,9 @@ import {
 } from "free-human-design";
 import tzlookup from "tz-lookup";
 import { fetch } from "wix-fetch";
-import { getSecretValue } from "wix-secrets-backend";
+import * as secretsV1 from "wix-secrets-backend";
+import { secrets } from "wix-secrets-backend.v2";
+import { elevate } from "wix-auth";
 
 // ============================================================================
 // BE YOU · Human Design backend
@@ -391,6 +393,24 @@ export const generateHumanDesignChart = webMethod(Permissions.Anyone, buildChart
 
 let webhookUrl = null;
 
+// Reads CRM_WEBHOOK_URL with the current Secrets API (which needs elevated
+// permissions), falling back to the older wix-secrets-backend API on sites
+// that still provide it.
+async function readWebhookUrl() {
+  try {
+    const { value } = await elevate(secrets.getSecretValue)("CRM_WEBHOOK_URL");
+    if (value) return value.trim();
+  } catch (error) {
+    console.warn("Secrets v2 lookup failed, trying the older API:", error?.message || error);
+  }
+  const getSecretValue = secretsV1.getSecretValue || (secretsV1.default && secretsV1.default.getSecretValue);
+  if (typeof getSecretValue === "function") {
+    const value = await getSecretValue("CRM_WEBHOOK_URL");
+    if (value) return String(value).trim();
+  }
+  throw new Error('No secret named "CRM_WEBHOOK_URL" could be read from Secrets Manager.');
+}
+
 export const sendChartToCrm = webMethod(Permissions.Anyone, async (birthData) => {
   const result = buildChart(birthData);
   if (!result.success) return { success: false, error: result.error };
@@ -412,7 +432,7 @@ export const sendChartToCrm = webMethod(Permissions.Anyone, async (birthData) =>
   };
 
   try {
-    if (!webhookUrl) webhookUrl = await getSecretValue("CRM_WEBHOOK_URL");
+    if (!webhookUrl) webhookUrl = await readWebhookUrl();
     const response = await fetch(webhookUrl, {
       method: "post",
       headers: { "Content-Type": "application/json" },
