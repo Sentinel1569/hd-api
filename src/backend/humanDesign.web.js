@@ -437,25 +437,25 @@ export const sendLeadToCrm = webMethod(Permissions.Anyone, async (lead) => {
     return { success: false, error: "A valid email address is required." };
   }
 
-  // Exactly what the CRM receives. chart_generated is always true because the
-  // form page only calls this once the visitor's chart is ready.
-  const body = {
-    payload: {
-      first_name: cleanName(input.firstName),
-      last_name: cleanName(input.lastName),
-      email,
-      date_of_birth: toIsoDate(input.birthDate) || "",
-      time_of_birth: (toIsoTime(input.birthTime) || "").slice(0, 5),
-      place_of_birth: cleanText(input.birthPlace, 200),
-      hd_type: cleanText(input.hdType, 60),
-      hd_authority: cleanText(input.hdAuthority, 60),
-      hd_profile: cleanText(input.hdProfile, 60),
-      chart_generated: true,
-      // Only an actual tick counts, so nobody is subscribed by accident.
-      newsletter_opt_in: input.newsletterOptIn === true
-    }
+  // Sent as-is. Zoho Flow files it under its own "payload", so each field is
+  // read there as ${webhookTrigger.payload.first_name} and so on.
+  // chart_generated is always true because the form page only calls this
+  // once the visitor's chart is ready.
+  const payload = {
+    first_name: cleanName(input.firstName),
+    last_name: cleanName(input.lastName),
+    email,
+    date_of_birth: toIsoDate(input.birthDate) || "",
+    time_of_birth: (toIsoTime(input.birthTime) || "").slice(0, 5),
+    place_of_birth: cleanText(input.birthPlace, 200),
+    hd_type: cleanText(input.hdType, 60),
+    hd_authority: cleanText(input.hdAuthority, 60),
+    hd_profile: cleanText(input.hdProfile, 60),
+    chart_generated: true,
+    // Only an actual tick counts, so nobody is subscribed by accident.
+    newsletter_opt_in: input.newsletterOptIn === true
   };
-  if (DEBUG) console.log("CRM lead:", JSON.stringify(body));
+  if (DEBUG) console.log("CRM lead:", JSON.stringify(payload));
 
   const webhookUrl = await getCrmWebhookUrl();
   if (!webhookUrl) {
@@ -466,7 +466,7 @@ export const sendLeadToCrm = webMethod(Permissions.Anyone, async (lead) => {
     const response = await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
+      body: JSON.stringify(payload)
     });
     if (!response.ok) {
       console.error(`CRM webhook answered HTTP ${response.status}.`);
