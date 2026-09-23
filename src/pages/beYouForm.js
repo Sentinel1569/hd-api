@@ -1,14 +1,15 @@
 // =====================================================================
 // BE YOU · FORM PAGE — Wix Velo page code (Section 1)
 // Collects the birth details, asks the backend for the chart, saves it
-// for the full chart page, and opens the "BE YOU CHART" lightbox.
+// for the full chart page, and opens the "BE YOU CHART" lightbox. Each
+// lead, with their newsletter opt-in, is also sent on to the CRM.
 // =====================================================================
 
 import wixWindowFrontend from "wix-window-frontend";
 import wixSiteFrontend from "wix-site-frontend";
 import wixLocationFrontend from "wix-location-frontend";
 import { session } from "wix-storage-frontend";
-import { generateHumanDesignChart, warmUp } from "backend/humanDesign.web";
+import { generateHumanDesignChart, sendLeadToCrm, warmUp } from "backend/humanDesign.web";
 
 // Flip to true only while debugging.
 const DEBUG = false;
@@ -16,6 +17,8 @@ const DEBUG = false;
 const LIGHTBOX_NAME = "BE YOU CHART";
 const FULL_CHART_PATH = "/be-you-full-chart";
 const CHART_STORAGE_KEY = "beYouHumanDesignChart";
+// The newsletter tick box. Keep it unticked by default and not required.
+const OPT_IN_CHECKBOX = "#Opt-in";
 // Set to false if visitors with a single name should be able to submit.
 const LAST_NAME_REQUIRED = true;
 
@@ -53,6 +56,7 @@ async function generateChart() {
     const birthDate = $w("#birthDateInput").value;
     const birthTime = $w("#birthTimeInput").value;
     const birthPlace = $w("#birthPlaceInput").value;
+    const newsletterOptIn = isOptedIn();
 
     if (!firstName || (LAST_NAME_REQUIRED && !lastName) || !email || !birthDate || !birthTime || !birthPlace) {
         showMessage("Please complete all fields before generating your chart.");
@@ -104,6 +108,20 @@ async function generateChart() {
         const chart = response.chart;
         if (DEBUG) console.log("Chart:", chart);
 
+        // Not awaited, so the visitor never waits on the CRM to see their chart.
+        sendLeadToCrm({
+            firstName: chart.firstName,
+            lastName: chart.lastName,
+            email: chart.email,
+            newsletterOptIn,
+            birthDate: chart.birthDate,
+            birthTime: chart.birthTime,
+            birthPlace: chart.birthPlace,
+            hdType: chart.type,
+            hdAuthority: chart.authority,
+            hdProfile: chart.profile
+        }).catch((error) => console.warn("Couldn't send the lead to the CRM:", error));
+
         // Saved here as well as in the lightbox, so the full chart page still
         // works if the visitor closes the lightbox and goes there another way.
         try {
@@ -130,6 +148,18 @@ async function generateChart() {
 function textValue(selector) {
     const value = $w(selector).value;
     return typeof value === "string" ? value.trim() : "";
+}
+
+// Unticked, renamed or missing all mean "no", so the tick box can never stop a
+// chart from generating. A Checkbox reports .checked; a Checkbox Group's .value
+// lists its ticked options.
+function isOptedIn() {
+    try {
+        const box = $w(OPT_IN_CHECKBOX);
+        return Array.isArray(box.value) ? box.value.length > 0 : box.checked === true;
+    } catch (error) {
+        return false;
+    }
 }
 
 // The Date Picker returns a Date at local midnight; read the local parts so

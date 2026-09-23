@@ -1,4 +1,7 @@
 import { webMethod, Permissions } from "wix-web-module";
+import { fetch } from "wix-fetch";
+import { secrets } from "wix-secrets-backend.v2";
+import { elevate } from "wix-auth";
 import {
   parseBirthToUtc,
   jdUtcFromDate,
@@ -16,6 +19,9 @@ import tzlookup from "tz-lookup";
 // the package's building blocks once each takes a chart from ~150 ms to
 // ~13 ms, and warmUp() lets the form page load the package while the visitor
 // is still typing.
+//
+// CRM: sendLeadToCrm() posts each lead, with their newsletter opt-in, to your
+// CRM webhook. See CRM WEBHOOK at the bottom for the one-time setup.
 // ============================================================================
 
 // Flip to true only while actively debugging.
@@ -391,4 +397,82 @@ export const warmUp = webMethod(Permissions.Anyone, () => {
     }
   }
   return true;
+});
+
+// ---------------------------------------------------------------------------
+// CRM WEBHOOK
+// One-time setup: in the dashboard go to Developer Tools → Secrets Manager
+// and store your CRM's webhook URL as a secret named CRM_WEBHOOK_URL. The URL
+// stays out of the code, and a new URL there takes effect straight away.
+// ---------------------------------------------------------------------------
+
+const CRM_WEBHOOK_SECRET = "CRM_WEBHOOK_URL";
+const LEAD_SOURCE = "BE YOU chart";
+
+async function getCrmWebhookUrl() {
+  try {
+    const { value } = await elevate(secrets.getSecretValue)(CRM_WEBHOOK_SECRET);
+    return typeof value === "string" ? value.trim() : "";
+  } catch (error) {
+    console.error(`Couldn't read the ${CRM_WEBHOOK_SECRET} secret:`, error?.message || error);
+    return "";
+  }
+}
+
+/**
+ * Posts one lead to the CRM webhook. The form page calls this once the chart
+ * is ready and doesn't wait for it, so a slow CRM never delays the chart.
+ * @param {{
+ *   firstName: string, lastName: string, email: string,
+ *   newsletterOptIn: boolean,
+ *   birthDate: string,  // "YYYY-MM-DD"
+ *   birthTime: string,  // "HH:mm"
+ *   birthPlace: string,
+ *   hdType: string, hdAuthority: string, hdProfile: string
+ * }} lead
+ */
+export const sendLeadToCrm = webMethod(Permissions.Anyone, async (lead) => {
+  const input = lead || {};
+  const email = cleanEmail(input.email);
+  if (!email) {
+    return { success: false, error: "A valid email address is required." };
+  }
+
+  // These field names are what the CRM receives.
+  const payload = {
+    firstName: cleanName(input.firstName),
+    lastName: cleanName(input.lastName),
+    email,
+    // Only an actual tick counts, so nobody is subscribed by accident.
+    newsletterOptIn: input.newsletterOptIn === true,
+    birthDate: toIsoDate(input.birthDate) || "",
+    birthTime: (toIsoTime(input.birthTime) || "").slice(0, 5),
+    birthPlace: cleanText(input.birthPlace, 200),
+    hdType: cleanText(input.hdType, 60),
+    hdAuthority: cleanText(input.hdAuthority, 60),
+    hdProfile: cleanText(input.hdProfile, 60),
+    source: LEAD_SOURCE
+  };
+  if (DEBUG) console.log("CRM lead:", JSON.stringify(payload));
+
+  const webhookUrl = await getCrmWebhookUrl();
+  if (!webhookUrl) {
+    return { success: false, error: "The CRM webhook isn't set up." };
+  }
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      console.error(`CRM webhook answered HTTP ${response.status}.`);
+      return { success: false, error: "The CRM didn't accept the lead." };
+    }
+    return { success: true };
+  } catch (error) {
+    console.error("CRM webhook request failed:", error?.message || error);
+    return { success: false, error: "Couldn't reach the CRM." };
+  }
 });
