@@ -11,18 +11,37 @@
  *   <Pressable onPress={logDemoSighting}>…</Pressable>
  * Once at start-up, in App.tsx:
  *   useEffect(() => { useSentinelStore.getState().restoreLastSession(); }, []);
+ *
+ * Can't read the plate? Log the car by its look instead:
+ *   logVehicle({ colour: 'Silver', bodyType: 'Saloon', make: 'Toyota', description: 'roof rack' })
+ * When you read its plate later, log it with the same look, then check
+ * describedVehiclesLike(sightings, look) from src/engine/patternDetection.ts and
+ * ask "Same car as the Silver Toyota Saloon you logged at 14:05?". If yes:
+ *   linkPlate(match.key, 'KSJ449')
  */
 import { create } from 'zustand';
 import { THRESHOLDS, type ThreatLevel } from '../constants/theme';
 import * as db from '../db/database';
 import { DEMO_ORIGIN, DEMO_PLATE, demoPosition } from '../engine/demo';
-import { applyCameraRead, assessAllVehicles, computeZoneId, normalizePlate } from '../engine/patternDetection';
+import {
+  applyCameraRead,
+  assessAllVehicles,
+  computeZoneId,
+  describedKey,
+  normalizePlate,
+  toVehicleKey,
+  vehicleKey,
+} from '../engine/patternDetection';
 import type { Sighting, ThreatAssessment, UserLocation } from '../types';
 
+/** A plate, or at least a colour and body type when you can't read the plate. */
 export interface LogVehicleInput {
-  plate: string;
-  description?: string;
+  plate?: string;
   colour?: string;
+  bodyType?: string;
+  make?: string;
+  /** Anything distinctive, e.g. "roof rack, dented left door". */
+  description?: string;
   locationLabel?: string;
 }
 
@@ -48,8 +67,13 @@ export interface SentinelState {
   setUserLocation: (location: UserLocation) => void;
   /** Day 7 test buttons only. The next sighting recalculates the real state. */
   setThreatState: (level: ThreatLevel) => void;
-  /** After an SDR ends with CLEAR. */
-  clearVehicle: (plate: string) => Promise<void>;
+  /** After an SDR ends with CLEAR. Takes a plate or a ThreatAssessment's key. */
+  clearVehicle: (vehicle: string) => Promise<void>;
+  /**
+   * You've read the plate of a car you logged without one: its earlier
+   * sightings join the plate's and now count in full.
+   */
+  linkPlate: (describedVehicleKey: string, plate: string) => Promise<ThreatAssessment | undefined>;
   whitelistVehicle: (plate: string, label?: string) => Promise<void>;
   /** Marks the zone around a point as a regular place (home, office). */
   addKnownZone: (latitude: number, longitude: number, label?: string) => Promise<void>;
@@ -60,6 +84,8 @@ export interface SentinelState {
 const HOUR_MS = 3_600_000;
 
 const newId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+const tidy = (value?: string) => value?.trim().replace(/\s+/g, ' ') || undefined;
 
 // Saving to the phone must never break the screen: log the problem and carry on.
 const warn = (what: string) => (error: unknown) => console.warn(`[SENTINEL] ${what} failed`, error);
@@ -91,7 +117,7 @@ export const useSentinelStore = create<SentinelState>()((set, get) => {
     const saved: Sighting = { ...sighting, id: newId(), sessionId: await ensureSession() };
     update({ sightings: [...get().sightings, saved] });
     await db.saveSighting(saved).catch(warn('Saving a sighting'));
-    return get().threats.find((t) => t.plate === saved.plate);
+    return get().threats.find((t) => t.key === vehicleKey(saved));
   };
 
   return {
@@ -140,19 +166,20 @@ export const useSentinelStore = create<SentinelState>()((set, get) => {
       await db.createSession(id, startedAt).catch(warn('Starting a session'));
     },
 
-    logVehicle: async ({ plate, description, colour, locationLabel }) => {
-      const normalised = normalizePlate(plate);
-      if (!normalised) return undefined;
+    logVehicle: async ({ plate, colour, bodyType, make, description, locationLabel }) => {
+      const look = { colour: tidy(colour), bodyType: tidy(bodyType), make: tidy(make) };
+      const normalised = normalizePlate(plate ?? '');
+      if (!normalised && !describedKey(look)) return undefined; // nothing to recognise it by
       const here = get().userLocation;
       return addSighting({
         plate: normalised,
+        ...look,
         seenAt: Date.now(),
         latitude: here?.latitude ?? null,
         longitude: here?.longitude ?? null,
         zoneId: here ? computeZoneId(here.latitude, here.longitude) : null,
-        description: description?.trim() || undefined,
-        colour: colour?.trim() || undefined,
-        locationLabel: locationLabel?.trim() || undefined,
+        description: tidy(description),
+        locationLabel: tidy(locationLabel),
         source: 'manual',
       });
     },
@@ -189,21 +216,33 @@ export const useSentinelStore = create<SentinelState>()((set, get) => {
         cameraSavedAt.set(sighting.id, readAt);
         await db.saveSighting(sighting).catch(warn('Saving a camera sighting'));
       }
-      return get().threats.find((t) => t.plate === normalised);
+      return get().threats.find((t) => t.key === normalised);
     },
 
     setUserLocation: (location) => set({ userLocation: location }),
 
     setThreatState: (level) => set({ threatState: level }),
 
-    clearVehicle: async (plate) => {
+    clearVehicle: async (vehicle) => {
+      const key = toVehicleKey(vehicle);
+      const ids = new Set(get().sightings.filter((s) => !s.cleared && vehicleKey(s) === key).map((s) => s.id));
+      if (ids.size === 0) return;
+      update({ sightings: get().sightings.map((s) => (ids.has(s.id) ? { ...s, cleared: true } : s)) });
+      await db.markSightingsCleared([...ids]).catch(warn('Clearing a vehicle'));
+    },
+
+    linkPlate: async (describedVehicleKey, plate) => {
       const normalised = normalizePlate(plate);
-      update({ sightings: get().sightings.map((s) => (s.plate === normalised ? { ...s, cleared: true } : s)) });
-      const sessionId = get().sessionId;
-      if (sessionId) await db.markVehicleCleared(sessionId, normalised).catch(warn('Clearing a vehicle'));
+      if (!normalised || !describedVehicleKey.startsWith('~')) return undefined;
+      const ids = new Set(get().sightings.filter((s) => vehicleKey(s) === describedVehicleKey).map((s) => s.id));
+      if (ids.size === 0) return undefined;
+      update({ sightings: get().sightings.map((s) => (ids.has(s.id) ? { ...s, plate: normalised } : s)) });
+      await db.setSightingsPlate([...ids], normalised).catch(warn('Linking a plate'));
+      return get().threats.find((t) => t.key === normalised);
     },
 
     whitelistVehicle: async (plate, label) => {
+      if (plate.startsWith('~')) return; // only a plate can be whitelisted, never a description
       const normalised = normalizePlate(plate);
       if (!normalised || get().whitelist.includes(normalised)) return;
       update({ whitelist: [...get().whitelist, normalised] });

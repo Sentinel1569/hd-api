@@ -26,6 +26,8 @@ const message = buildAlertMessage({
 });
 assert.match(message, /KSJ·449 is following me \(threat 9\.4\/10\)/);
 assert.match(message, /at 14:32: https:\/\/maps\.google\.com\/\?q=6\.45410,3\.39470/);
+const lookOnly = buildAlertMessage({ plate: '', label: 'Silver Toyota Saloon', score: 6.8, location: null });
+assert.match(lookOnly, /I think a Silver Toyota Saloon \(plate unknown\) is following me/);
 assert.equal(await navigateToPoliceStation(), true);
 assert.match(openedUrls.at(-1), /google\.com\/maps\/search\/\?api=1&query=police%20station/);
 

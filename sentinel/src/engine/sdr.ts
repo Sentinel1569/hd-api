@@ -33,7 +33,7 @@ export const SDR_RULES = [
   'Drive legally at all times — no speeding, no red lights, no illegal turns. A crash makes you more vulnerable, not less.',
   'Stay on busy, well-lit public roads. Never lead a suspected tail to your home, a quiet street or a dead end.',
   'Act normally. Use your mirrors as usual — never stare, gesture, brake-check, confront or chase the other vehicle.',
-  'Answer YES only when you can clearly see the same vehicle. If you cannot see it, answer NO.',
+  'Answer YES only when you can clearly see the same vehicle: its plate, or its colour, make and any distinctive feature. If you cannot see it, answer NO.',
   'Your safety comes first. If you feel threatened, tap ABORT, drive to a police station or busy public place, and call for help (112 in Nigeria).',
 ];
 
@@ -87,6 +87,15 @@ export function getSdrManeuvers(drivingSide: DrivingSide = 'right'): SdrManeuver
   ];
 }
 
+/**
+ * Who the SDR is about: a plate, or a ThreatAssessment (which also covers
+ * vehicles logged without a plate, by their description).
+ */
+export type SdrTarget = string | { plate: string; label: string };
+
+const plateOf = (target: SdrTarget) => normalizePlate(typeof target === 'string' ? target : target.plate);
+const labelOf = (target: SdrTarget) => (typeof target === 'string' ? formatPlate(target) : target.label);
+
 /** "K S J, 4 4 9" — text-to-speech mangles plates read as one word. */
 export function spellPlate(plate: string): string {
   return formatPlate(plate)
@@ -100,13 +109,19 @@ export function maneuverVoiceLine(maneuver: SdrManeuver, index: number, total: n
   return `Maneuver ${index + 1} of ${total}. ${maneuver.voice}`;
 }
 
-/** On-screen question after each maneuver: "IS KSJ · 449 STILL VISIBLE?" */
-export function recheckQuestion(plate: string): string {
+/**
+ * On-screen question after each maneuver: "IS KSJ · 449 STILL VISIBLE?", or
+ * "IS THE SILVER TOYOTA SALOON STILL BEHIND YOU?" when the plate is unknown.
+ */
+export function recheckQuestion(target: SdrTarget): string {
+  const plate = plateOf(target);
+  if (!plate) return `IS THE ${labelOf(target).toUpperCase()} STILL BEHIND YOU?`;
   return `IS ${formatPlate(plate).split('·').join(' · ')} STILL VISIBLE?`;
 }
 
-export function recheckVoiceLine(plate: string): string {
-  return `Is ${spellPlate(plate)} still visible?`;
+export function recheckVoiceLine(target: SdrTarget): string {
+  const plate = plateOf(target);
+  return plate ? `Is ${spellPlate(plate)} still visible?` : `Is the ${labelOf(target)} still behind you?`;
 }
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -137,7 +152,10 @@ export interface SdrStepResult {
 }
 
 export interface SdrSummary {
+  /** '' when the plate is unknown. */
   plate: string;
+  /** "KSJ·449" or "Silver Toyota Saloon". */
+  label: string;
   startScore: number;
   finalScore: number;
   verdict: SdrVerdict;
@@ -146,7 +164,7 @@ export interface SdrSummary {
 
 /** Everything the SDR Result screen shows (Day 14). */
 export function summariseSdr(
-  plate: string,
+  target: SdrTarget,
   startScore: number,
   answers: readonly boolean[],
   drivingSide: DrivingSide = 'right',
@@ -160,7 +178,8 @@ export function summariseSdr(
   }));
   const finalScore = scoreAfterAnswers(startScore, answers);
   return {
-    plate: normalizePlate(plate),
+    plate: plateOf(target),
+    label: labelOf(target),
     startScore,
     finalScore,
     verdict: sdrVerdict(finalScore, answers),

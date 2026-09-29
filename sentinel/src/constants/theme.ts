@@ -116,6 +116,7 @@ export const THRESHOLDS = {
   POINTS_FOR_9: 6, // 6 evidence points = threat score 9.0
   PATTERN_WINDOW_MIN: 120, // sightings older than this (before the latest one) are ignored
   ENCOUNTER_GAP_S: 90, // camera reads of a plate less than this far apart = one continuous encounter
+  DESCRIPTION_WEIGHT: 0.5, // plate unknown: points ×0.5, because many cars look alike
   CORRIDOR_R2: 0.9, // sightings this close to one straight line = just sharing a road
   CORRIDOR_POINT_WEIGHT: 1 / 6, // on a shared road a repeat sighting is worth 1/6 of a point
 

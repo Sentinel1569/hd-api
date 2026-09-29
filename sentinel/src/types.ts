@@ -6,7 +6,11 @@ export type { ThreatLevel };
 export interface Sighting {
   id: string;
   sessionId: string;
-  /** Normalised plate: uppercase letters and digits only, e.g. "KSJ449". */
+  /**
+   * Normalised plate: uppercase letters and digits only, e.g. "KSJ449".
+   * Empty ('') when you couldn't read it; the vehicle is then matched by its
+   * colour, body type and make instead.
+   */
   plate: string;
   /** When it was seen, in milliseconds since 1970 (Date.now()). */
   seenAt: number;
@@ -14,8 +18,11 @@ export interface Sighting {
   latitude: number | null;
   longitude: number | null;
   zoneId: string | null;
-  description?: string; // "Dark grey saloon"
-  colour?: string;
+  /** Anything distinctive, e.g. "roof rack, dented left door". */
+  description?: string;
+  colour?: string; // "Silver" — see src/constants/vehicles.ts
+  bodyType?: string; // "Saloon"
+  make?: string; // "Toyota"
   locationLabel?: string; // "High St / Mill Rd"
   source: 'manual' | 'demo' | 'camera';
   /**
@@ -29,7 +36,16 @@ export interface Sighting {
 
 /** The threat engine's verdict on one vehicle. */
 export interface ThreatAssessment {
+  /** Groups this vehicle's sightings: the plate, or "~COLOUR|TYPE|MAKE" when no plate was read. */
+  key: string;
+  /** '' when the plate is unknown. */
   plate: string;
+  /** "KSJ·449", or "Silver Toyota Saloon" when the plate is unknown. */
+  label: string;
+  /** true when the plate is unknown and the vehicle is matched by description (counts half). */
+  described: boolean;
+  /** The latest distinctive feature you noted, e.g. "roof rack". */
+  description?: string;
   /** 0.0 – 10.0, one decimal place. */
   score: number;
   level: ThreatLevel;

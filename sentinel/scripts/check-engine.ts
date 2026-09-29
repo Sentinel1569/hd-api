@@ -16,12 +16,22 @@ import {
   type CameraRead,
   computeR2,
   computeZoneId,
+  describedKey,
+  describedVehiclesLike,
   describeThreat,
   formatPlate,
   normalizePlate,
   scoreFromPoints,
+  vehicleKey,
 } from '../src/engine/patternDetection';
-import { recheckQuestion, scoreAfterAnswers, sdrVerdict, spellPlate, summariseSdr } from '../src/engine/sdr';
+import {
+  recheckQuestion,
+  recheckVoiceLine,
+  scoreAfterAnswers,
+  sdrVerdict,
+  spellPlate,
+  summariseSdr,
+} from '../src/engine/sdr';
 import type { Sighting } from '../src/types';
 
 let failures = 0;
@@ -131,6 +141,30 @@ check('Result card rows', summary.steps.map((s) => `${s.maneuver.name}: ${s.labe
   'EXIT AND REJOIN: ⚠ REAPPEARED ×2.5',
 ]);
 check('Watch/alert thresholds', [THRESHOLDS.WATCH, THRESHOLDS.ALERT], [4, 7]);
+
+section('Plate unknown — logged by colour, type and make');
+const LOOK = { colour: 'Silver', bodyType: 'Saloon', make: 'Toyota' };
+const described = (time: number, northKm: number, eastKm: number, look: object = LOOK): Sighting => ({
+  ...seen('', time, northKm, eastKm),
+  ...look,
+});
+const silver4 = [described(at(11, 0), 0, 0), described(at(11, 6), 1, 0), described(at(11, 13), 1, 1), described(at(11, 20), 2, 1)];
+const silver4Result = assessVehicle(silver4);
+check('Same 4 zones in 20 min (with a plate: 9.0)', `${silver4Result.level} (${silver4Result.score.toFixed(1)})`, 'watch (6.8)');
+const silver6 = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 2], [1, 2]].map(([n, e], i) => described(at(11, i * 8), n, e));
+check('…seen in 6 zones over 40 min', `${assessVehicle(silver6).level} (${assessVehicle(silver6).score.toFixed(1)})`, 'alert (8.5)');
+check('"silver toyota saloon" matches "Silver Toyota Saloon"', vehicleKey({ ...described(0, 0, 0), colour: 'silver', bodyType: 'saloon', make: 'toyota' }) === vehicleKey(silver4[0]), true);
+check('A Silver Honda Saloon is a different vehicle', vehicleKey({ ...silver4[0], make: 'Honda' }) === vehicleKey(silver4[0]), false);
+check('Needs at least a colour and a body type', describedKey({ colour: 'Silver' }), null);
+check('Plate read later: linked sightings count in full', oneDecimal(score(silver4.map((s) => ({ ...s, plate: 'KSJ449' })))), '9.0');
+const blackSuv = [described(at(11, 2), 0, 0, { colour: 'Black', bodyType: 'SUV' })];
+check('Suggests the matching earlier vehicle to link', describedVehiclesLike([...silver4, ...blackSuv], LOOK).map((v) => v.label), ['Silver Toyota Saloon']);
+const noMake = [described(at(11, 2), 0, 0, { colour: 'Silver', bodyType: 'Saloon' })];
+check('…even if you missed the make then', describedVehiclesLike(noMake, LOOK).map((v) => v.label), ['Silver Saloon']);
+check('SDR question', recheckQuestion(silver4Result), 'IS THE SILVER TOYOTA SALOON STILL BEHIND YOU?');
+check('Spoken', recheckVoiceLine(silver4Result), 'Is the Silver Toyota Saloon still behind you?');
+check('Notification line', describeThreat(silver4Result), 'SILVER TOYOTA SALOON · 4 SIGHTINGS · 20 MIN · 2.2KM SPREAD');
+check('Kept apart from plate vehicles', assessAllVehicles([...followed, ...silver4]).map((a) => `${a.label} ${a.score.toFixed(1)}`), ['KSJ·449 9.0', 'Silver Toyota Saloon 6.8']);
 
 section('Phase 2 — rear-camera plate reads, every 2 seconds');
 /** Your drive as legs of [km north, km east, minutes], read by a rear camera every 2 s. */

@@ -21,9 +21,9 @@ export const ENCRYPT_DATABASE = false;
 const DATABASE_NAME = ENCRYPT_DATABASE ? 'sentinel-secure.db' : 'sentinel.db';
 const KEY_NAME = 'sentinel.db.key';
 
-// To change tables later: add SCHEMA_V3, bump SCHEMA_VERSION, and add an
-// `if (version < 3)` step in openDatabase(). Never edit a schema once shipped.
-const SCHEMA_VERSION = 2;
+// To change tables later: add SCHEMA_V4, bump SCHEMA_VERSION, and add an
+// `if (version < 4)` step in openDatabase(). Never edit a schema once shipped.
+const SCHEMA_VERSION = 3;
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS sessions (
   id         TEXT PRIMARY KEY NOT NULL,
@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS known_zones (
 // Version 2: camera sightings remember when the plate was last read (Phase 2).
 const SCHEMA_V2 = 'ALTER TABLE sightings ADD COLUMN last_seen_at INTEGER;';
 
+// Version 3: vehicles logged without a plate are described by type and make too.
+const SCHEMA_V3 = 'ALTER TABLE sightings ADD COLUMN body_type TEXT; ALTER TABLE sightings ADD COLUMN make TEXT;';
+
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 /** Opens the database, creating the tables the first time. Safe to call often. */
@@ -88,6 +91,7 @@ async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
   const version = row?.user_version ?? 0;
   if (version < 1) await db.execAsync(SCHEMA_V1);
   if (version < 2) await db.execAsync(SCHEMA_V2);
+  if (version < 3) await db.execAsync(SCHEMA_V3);
   if (version < SCHEMA_VERSION) await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   return db;
 }
@@ -149,6 +153,8 @@ interface SightingRow {
   zone_id: string | null;
   description: string | null;
   colour: string | null;
+  body_type: string | null;
+  make: string | null;
   location_label: string | null;
   source: string;
   cleared: number;
@@ -165,6 +171,8 @@ const toSighting = (row: SightingRow): Sighting => ({
   zoneId: row.zone_id,
   description: row.description ?? undefined,
   colour: row.colour ?? undefined,
+  bodyType: row.body_type ?? undefined,
+  make: row.make ?? undefined,
   locationLabel: row.location_label ?? undefined,
   source: row.source === 'demo' || row.source === 'camera' ? row.source : 'manual',
   cleared: row.cleared === 1,
@@ -174,8 +182,9 @@ export async function saveSighting(s: Sighting): Promise<void> {
   const db = await getDatabase();
   await db.runAsync(
     `INSERT OR REPLACE INTO sightings
-       (id, session_id, plate, seen_at, last_seen_at, latitude, longitude, zone_id, description, colour, location_label, source, cleared)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, session_id, plate, seen_at, last_seen_at, latitude, longitude, zone_id,
+        description, colour, body_type, make, location_label, source, cleared)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     s.id,
     s.sessionId,
     s.plate,
@@ -186,6 +195,8 @@ export async function saveSighting(s: Sighting): Promise<void> {
     s.zoneId,
     s.description ?? null,
     s.colour ?? null,
+    s.bodyType ?? null,
+    s.make ?? null,
     s.locationLabel ?? null,
     s.source,
     s.cleared ? 1 : 0,
@@ -201,10 +212,20 @@ export async function getSightings(sessionId: string): Promise<Sighting[]> {
   return rows.map(toSighting);
 }
 
+const placeholders = (count: number) => Array(count).fill('?').join(', ');
+
 /** After an SDR ends with CLEAR, the vehicle's sightings so far stop counting. */
-export async function markVehicleCleared(sessionId: string, plate: string): Promise<void> {
+export async function markSightingsCleared(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
   const db = await getDatabase();
-  await db.runAsync('UPDATE sightings SET cleared = 1 WHERE session_id = ? AND plate = ?', sessionId, plate);
+  await db.runAsync(`UPDATE sightings SET cleared = 1 WHERE id IN (${placeholders(ids.length)})`, ...ids);
+}
+
+/** Gives sightings logged without a plate the plate you have now read. */
+export async function setSightingsPlate(ids: string[], plate: string): Promise<void> {
+  if (ids.length === 0) return;
+  const db = await getDatabase();
+  await db.runAsync(`UPDATE sightings SET plate = ? WHERE id IN (${placeholders(ids.length)})`, plate, ...ids);
 }
 
 /** Week 5 auto-delete. Returns how many sightings were removed. */

@@ -26,6 +26,7 @@ function runPhase(name: string, dir: string, ...args: string[]): string {
 
 async function phase1() {
   const { useSentinelStore, selectFlaggedCount, selectLoggedCount } = await import('../src/store/sentinelStore');
+  const { describedVehiclesLike } = await import('../src/engine/patternDetection');
   const db = await import('../src/db/database');
   const store = useSentinelStore;
 
@@ -67,6 +68,30 @@ async function phase1() {
   assert.equal(store.getState().sightings.filter((s) => s.plate === 'CAM777').length, 2);
   assert.equal(camera?.encounters, 1, 'a car still in view is one encounter');
   assert.equal((await db.getSightings(sessionId)).filter((s) => s.source === 'camera').length, 2);
+
+  // Plate unknown: log the car by its look, then link its plate once it is read.
+  const look = { colour: 'Silver', bodyType: 'Saloon', make: 'Toyota' };
+  assert.equal(await store.getState().logVehicle({ colour: 'Silver' }), undefined, 'a colour alone is not enough');
+  store.getState().setUserLocation({ ...here, latitude: here.latitude + 0.02 });
+  const first = await store.getState().logVehicle({ ...look, description: 'Roof rack' });
+  assert.equal(first?.described, true);
+  assert.equal(first?.label, 'Silver Toyota Saloon');
+  store.getState().setUserLocation({ ...here, latitude: here.latitude + 0.03 });
+  await store.getState().logVehicle({ ...look });
+  store.getState().setUserLocation({ ...here, latitude: here.latitude + 0.04 });
+  await store.getState().logVehicle({ plate: 'DES 123', ...look });
+  const [match] = describedVehiclesLike(store.getState().sightings, look);
+  assert.equal(match?.label, 'Silver Toyota Saloon');
+  const linked = await store.getState().linkPlate(match.key, 'des-123');
+  assert.equal(linked?.encounters, 3, 'both described sightings join the plate');
+  assert.equal(linked?.description, 'Roof rack');
+  assert.equal((await db.getSightings(sessionId)).filter((s) => s.plate === 'DES123').length, 3);
+
+  // A described vehicle can be cleared by an SDR like any other.
+  const suv = await store.getState().logVehicle({ colour: 'Black', bodyType: 'SUV' });
+  await store.getState().clearVehicle(suv?.key ?? '');
+  assert.equal(store.getState().threats.find((t) => t.key === suv?.key)?.score, 0);
+  assert.equal(store.getState().threats.some((t) => t.described && t.score > 0), false);
   console.log(sessionId);
 }
 
@@ -82,12 +107,14 @@ async function phase2() {
 
   const state = store.getState();
   assert.equal(state.sessionId, firstSessionId, 'the last session is resumed after a restart');
-  assert.equal(state.sightings.length, 7);
-  assert.equal(state.sightings.filter((s) => s.cleared).length, 3, 'SDR-cleared sightings stay cleared');
+  assert.equal(state.sightings.length, 11);
+  assert.equal(state.sightings.filter((s) => s.cleared).length, 4, 'SDR-cleared sightings stay cleared');
   assert.deepEqual(state.whitelist, ['ABC123']);
   assert.equal(state.knownZones.length, 1);
   assert.equal(state.threats.find((t) => t.plate === 'KSJ449')?.sightings, 1, 'only the new sighting counts');
   assert.equal(state.threats.find((t) => t.plate === 'CAM777')?.encounters, 1, 'camera sightings restore as one encounter');
+  assert.equal(state.threats.find((t) => t.key === 'DES123')?.encounters, 3, 'linked plates survive a restart');
+  assert.equal(state.sightings.find((s) => s.description === 'Roof rack')?.make, 'Toyota');
   assert.equal(state.threatState, 'calm');
 
   await db.saveSighting({
@@ -143,8 +170,11 @@ async function upgrade() {
   const camera = (await db.getSightings('old')).find((s) => s.id === 'c1');
   assert.equal(camera?.lastSeenAt, 9000);
   assert.equal(camera?.source, 'camera');
+  await db.saveSighting({ ...kept, id: 'd1', plate: '', colour: 'Silver', bodyType: 'Saloon', make: 'Toyota' });
+  const lookOnly = (await db.getSightings('old')).find((s) => s.id === 'd1');
+  assert.equal(`${lookOnly?.colour} ${lookOnly?.make} ${lookOnly?.bodyType}`, 'Silver Toyota Saloon');
   const version = await (await db.getDatabase()).getFirstAsync<{ user_version: number }>('PRAGMA user_version');
-  assert.equal(version?.user_version, 2);
+  assert.equal(version?.user_version, 3);
   console.log('ok');
 }
 
@@ -160,7 +190,7 @@ if (phase === 'phase1') {
     const sessionId = runPhase('phase1', dirs[0]);
     runPhase('phase2', dirs[0], sessionId);
     runPhase('upgrade', dirs[1]);
-    console.log('✓ Store + database: demo taps, logging, camera reads, SDR clear, restart restore, auto-delete, panic wipe, schema upgrade');
+    console.log('✓ Store + database: demo taps, logging, camera reads, plate-unknown vehicles, SDR clear, restart restore, auto-delete, panic wipe, schema upgrade');
   } finally {
     for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   }

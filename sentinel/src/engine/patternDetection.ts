@@ -17,6 +17,8 @@
  *   Rush hour: evidence ×0.75 when every sighting was in rush hour.
  *   Small spread: seen over less than 1.5 km → held at 6.9, just below ALERT.
  *   Known zones: repeat sightings inside one of your regular places count once.
+ *   Plate unknown: a vehicle you could only describe (colour, type, make) earns
+ *     half points, because many cars look alike. Link the plate when you read it.
  *   Whitelist: always 0.
  *
  * The Build Companion's Day 8 checks:
@@ -52,6 +54,45 @@ export function normalizePlate(plate: string): string {
 /** "KSJ449" → "KSJ·449", the way the designs display plates. */
 export function formatPlate(plate: string): string {
   return normalizePlate(plate).replace(/([A-Z])(?=\d)|(\d)(?=[A-Z])/g, '$1$2·');
+}
+
+export interface VehicleLook {
+  colour?: string;
+  bodyType?: string;
+  make?: string;
+}
+
+const upperWords = (value?: string) => (value ?? '').trim().replace(/\s+/g, ' ').toUpperCase();
+
+/**
+ * The matching key for a vehicle you could only describe: "~SILVER|SALOON|TOYOTA".
+ * Needs at least a colour and a body type, otherwise null. The make is optional,
+ * but a given make only matches the same make.
+ */
+export function describedKey(look: VehicleLook): string | null {
+  const colour = upperWords(look.colour);
+  const bodyType = upperWords(look.bodyType);
+  if (!colour || !bodyType) return null;
+  return `~${colour}|${bodyType}|${upperWords(look.make)}`;
+}
+
+/** What groups sightings into one vehicle: its plate, or its description when the plate is unknown. */
+export function vehicleKey(s: Pick<Sighting, 'id' | 'plate'> & VehicleLook): string {
+  return normalizePlate(s.plate) || describedKey(s) || `~UNIDENTIFIED:${s.id}`;
+}
+
+/** Turns a plate typed any way, or a described vehicle's key, into a vehicle key. */
+export function toVehicleKey(plateOrKey: string): string {
+  return plateOrKey.startsWith('~') ? plateOrKey : normalizePlate(plateOrKey);
+}
+
+/** "Silver Toyota Saloon": how a vehicle without a plate is shown and spoken. */
+export function describedLabel(look: VehicleLook): string {
+  return [look.colour, look.make, look.bodyType]
+    .map((part) => (part ?? '').trim().replace(/\s+/g, ' '))
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 /**
@@ -220,11 +261,47 @@ export function applyCameraRead(
   return { sightings: [...sightings, created], sighting: created, created: true };
 }
 
+/**
+ * Vehicles you logged without a plate that could be the one you are now logging
+ * with a plate: same colour and type, and the same make unless either make is
+ * unknown. Newest first. Ask "Same car as the Silver Toyota Saloon you logged at
+ * 14:05?" and, if the answer is yes, call the store's linkPlate.
+ */
+export function describedVehiclesLike(
+  sightings: readonly Sighting[],
+  look: VehicleLook,
+): { key: string; label: string; lastSeenAt: number }[] {
+  const colour = upperWords(look.colour);
+  const bodyType = upperWords(look.bodyType);
+  const make = upperWords(look.make);
+  if (!colour || !bodyType) return [];
+  const found = new Map<string, { key: string; label: string; lastSeenAt: number }>();
+  for (const s of sightings) {
+    if (normalizePlate(s.plate) || s.cleared) continue;
+    const theirMake = upperWords(s.make);
+    if (upperWords(s.colour) !== colour || upperWords(s.bodyType) !== bodyType) continue;
+    if (make && theirMake && make !== theirMake) continue;
+    const key = vehicleKey(s);
+    const previous = found.get(key);
+    if (!previous || endOf(s) > previous.lastSeenAt) {
+      found.set(key, { key, label: describedLabel(s), lastSeenAt: endOf(s) });
+    }
+  }
+  return [...found.values()].sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+}
+
 /** Scores ONE vehicle from all of its sightings. */
 export function assessVehicle(sightings: readonly Sighting[], options: AssessOptions = {}): ThreatAssessment {
-  const plate = sightings.length > 0 ? normalizePlate(sightings[0].plate) : '';
+  const bySeen = [...sightings].sort((a, b) => a.seenAt - b.seenAt);
+  const newest = bySeen[bySeen.length - 1];
+  const plate = newest ? normalizePlate(newest.plate) : '';
+  const described = newest !== undefined && plate === '';
   const result: ThreatAssessment = {
+    key: newest ? vehicleKey(newest) : '',
     plate,
+    label: plate ? formatPlate(plate) : newest ? describedLabel(newest) : '',
+    described,
+    description: [...bySeen].reverse().find((s) => s.description)?.description,
     score: 0,
     level: 'calm',
     sightings: 0,
@@ -239,13 +316,13 @@ export function assessVehicle(sightings: readonly Sighting[], options: AssessOpt
   };
 
   const whitelist = new Set([...(options.whitelist ?? [])].map(normalizePlate));
-  if (whitelist.has(plate)) {
+  if (plate && whitelist.has(plate)) {
     result.reasons.push('Whitelisted — never alerts');
     return result;
   }
 
   // Only the recent pattern counts, and sightings cleared by an SDR never count.
-  const active = sightings.filter((s) => !s.cleared).sort((a, b) => a.seenAt - b.seenAt);
+  const active = bySeen.filter((s) => !s.cleared);
   if (active.length === 0) return result;
   const latest = Math.max(...active.map(endOf));
   const recent = active.filter((s) => latest - endOf(s) <= THRESHOLDS.PATTERN_WINDOW_MIN * 60_000);
@@ -272,6 +349,7 @@ export function assessVehicle(sightings: readonly Sighting[], options: AssessOpt
   const repeats = encounters - 1;
   const extraZones = Math.max(0, zones - 1);
   let points = corridor ? repeats * THRESHOLDS.CORRIDOR_POINT_WEIGHT : repeats + extraZones;
+  if (described) points *= THRESHOLDS.DESCRIPTION_WEIGHT;
 
   // Demo sightings skip the rush-hour filter so the Day 9 test works at any time of day.
   const rushShare = counted.filter((s) => s.source !== 'demo' && isRushHour(s.seenAt)).length / counted.length;
@@ -285,13 +363,14 @@ export function assessVehicle(sightings: readonly Sighting[], options: AssessOpt
   const reasons = [`Seen ${encounters}× in ${minutes} min`];
   if (zones > 1 && !corridor) reasons.push(`${zones} different zones`);
   if (corridor) reasons.push('Lined up along your road — counts much less');
+  if (described) reasons.push('Plate unknown — matched by description, counts half');
   if (recent.length > counted.length) reasons.push('Repeat sightings in a known zone count once');
   if (rushShare > 0) reasons.push('Rush hour — score reduced');
   if (heldBelowAlert) reasons.push(`Seen over only ${spreadKm.toFixed(1)} km — held below ALERT`);
   if (located.length < counted.length) reasons.push(`${counted.length - located.length} sighting(s) had no GPS`);
 
   return {
-    plate,
+    ...result,
     score,
     level: threatLevelForScore(score),
     sightings: counted.length,
@@ -313,17 +392,17 @@ export function calculateThreatScore(sightings: readonly Sighting[], options: As
 
 /** Scores every vehicle in a list of mixed sightings, highest score first. */
 export function assessAllVehicles(sightings: readonly Sighting[], options: AssessOptions = {}): ThreatAssessment[] {
-  const byPlate = new Map<string, Sighting[]>();
+  const byVehicle = new Map<string, Sighting[]>();
   for (const s of sightings) {
-    const plate = normalizePlate(s.plate);
-    const list = byPlate.get(plate);
+    const key = vehicleKey(s);
+    const list = byVehicle.get(key);
     if (list) list.push(s);
-    else byPlate.set(plate, [s]);
+    else byVehicle.set(key, [s]);
   }
-  return [...byPlate.values()].map((list) => assessVehicle(list, options)).sort((a, b) => b.score - a.score);
+  return [...byVehicle.values()].map((list) => assessVehicle(list, options)).sort((a, b) => b.score - a.score);
 }
 
 /** The notification-strip line: "KSJ·449 · 3 SIGHTINGS · 34 MIN · 2.3KM SPREAD". */
 export function describeThreat(a: ThreatAssessment): string {
-  return `${formatPlate(a.plate)} · ${a.encounters} SIGHTINGS · ${a.minutes} MIN · ${a.spreadKm.toFixed(1)}KM SPREAD`;
+  return `${a.label.toUpperCase()} · ${a.encounters} SIGHTINGS · ${a.minutes} MIN · ${a.spreadKm.toFixed(1)}KM SPREAD`;
 }

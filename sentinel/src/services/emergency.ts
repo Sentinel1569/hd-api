@@ -11,18 +11,28 @@
 import * as SMS from 'expo-sms';
 import { Linking } from 'react-native';
 import type { LatLng } from '../engine/geo';
-import { formatPlate } from '../engine/patternDetection';
+import { formatPlate, normalizePlate } from '../engine/patternDetection';
 
 export function mapsLink({ latitude, longitude }: LatLng): string {
   return `https://maps.google.com/?q=${latitude.toFixed(5)},${longitude.toFixed(5)}`;
 }
 
-export function buildAlertMessage(opts: { plate: string; score: number; location: LatLng | null; at?: Date }): string {
+/** Pass a ThreatAssessment's plate and label; the label is used when the plate is unknown. */
+export function buildAlertMessage(opts: {
+  plate: string;
+  label?: string;
+  score: number;
+  location: LatLng | null;
+  at?: Date;
+}): string {
   const at = opts.at ?? new Date();
   const time = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
   const where = opts.location ? mapsLink(opts.location) : 'location unavailable';
+  const vehicle = normalizePlate(opts.plate)
+    ? `vehicle ${formatPlate(opts.plate)}`
+    : `a ${opts.label ?? 'vehicle'} (plate unknown)`;
   return (
-    `SENTINEL ALERT: I think vehicle ${formatPlate(opts.plate)} is following me ` +
+    `SENTINEL ALERT: I think ${vehicle} is following me ` +
     `(threat ${opts.score.toFixed(1)}/10). My location at ${time}: ${where} ` +
     `Please call me. If I don't answer, call the police.`
   );
