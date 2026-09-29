@@ -1,0 +1,18 @@
+{
+  "name": "sentinel-kit",
+  "private": true,
+  "type": "module",
+  "description": "Missing parts for the SENTINEL Build Companion. Copy src/ and scripts/ into your Expo project; this file only runs the checks.",
+  "scripts": {
+    "check": "tsx scripts/check-engine.ts",
+    "test": "tsx scripts/check-engine.ts && node --disable-warning=ExperimentalWarning --import tsx --import ./tests/register.mjs tests/store-db.test.ts && node --disable-warning=ExperimentalWarning --import tsx --import ./tests/register.mjs tests/security-services.test.ts"
+  },
+  "devDependencies": {
+    "react": "19.2.3",
+    "tsx": "^4.23.15",
+    "zustand": "^5.0.15"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}
