@@ -9,8 +9,8 @@ the way it does, and how SENTINEL moves from the phone into the car.
 | File | Build day | What it gives you |
 |---|---|---|
 | `src/constants/theme.ts` | 1, 7 | `COLOURS` (dark + light), `FONTS`, `THRESHOLDS`, and `STATE_UI` for calm / watch / alert |
-| `src/store/sentinelStore.ts` | 6, 9, 20 | Zustand store: threat state, sightings, test button, saving to SQLite |
-| `src/engine/patternDetection.ts` | 8, Week 6 | `calculateThreatScore`, `computeZoneId`, `computeR2`, corridor filter, whitelist, rush hour, 1.5 km rule, known zones |
+| `src/store/sentinelStore.ts` | 6, 9, 20 | Zustand store: threat state, sightings, test button, saving to SQLite, and `logCameraRead` for a Phase 2 rear camera |
+| `src/engine/patternDetection.ts` | 8, Week 6 | `calculateThreatScore`, `computeZoneId`, `computeR2`, corridor filter, whitelist, rush hour, 1.5 km rule, known zones, and encounter counting for camera reads |
 | `src/engine/demo.ts` | 9 | Where the test button places each sighting |
 | `src/hooks/useLocationTracking.ts` | 10 | GPS position and speed |
 | `src/engine/sdr.ts` | 11–14 | The 5 SDR rules, 5 maneuvers, voice lines, scoring, verdicts, result-screen buttons |
@@ -47,6 +47,7 @@ npm install
 npm test
 ```
 
-Runs the engine checks, the store and database against real SQLite (including a
-simulated app restart), and the PIN lockout. The kit was also type-checked in
+Runs the engine checks (including simulated rear-camera drives), the store and
+database against real SQLite (including an app restart and a database upgrade),
+and the PIN lockout. The kit was also type-checked in
 strict mode and bundled for Android inside a fresh Expo SDK 57 project.

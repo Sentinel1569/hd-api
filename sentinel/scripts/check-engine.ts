@@ -10,8 +10,10 @@ import { THRESHOLDS } from '../src/constants/theme';
 import { DEMO_PLATE, DEMO_ORIGIN, demoPosition } from '../src/engine/demo';
 import { offsetByKm } from '../src/engine/geo';
 import {
+  applyCameraRead,
   assessAllVehicles,
   assessVehicle,
+  type CameraRead,
   computeR2,
   computeZoneId,
   describeThreat,
@@ -129,6 +131,41 @@ check('Result card rows', summary.steps.map((s) => `${s.maneuver.name}: ${s.labe
   'EXIT AND REJOIN: ⚠ REAPPEARED ×2.5',
 ]);
 check('Watch/alert thresholds', [THRESHOLDS.WATCH, THRESHOLDS.ALERT], [4, 7]);
+
+section('Phase 2 — rear-camera plate reads, every 2 seconds');
+/** Your drive as legs of [km north, km east, minutes], read by a rear camera every 2 s. */
+function cameraDrive(plate: string, start: number, legs: [number, number, number][]): CameraRead[] {
+  const reads: CameraRead[] = [];
+  let north = 0;
+  let east = 0;
+  let time = start;
+  for (const [legNorth, legEast, minutes] of legs) {
+    const steps = minutes * 30;
+    for (let i = 0; i < steps; i++) {
+      const p = offsetByKm(ORIGIN, north + (legNorth * i) / steps, east + (legEast * i) / steps);
+      reads.push({ plate, seenAt: time + i * 2000, latitude: p.latitude, longitude: p.longitude });
+    }
+    north += legNorth;
+    east += legEast;
+    time += minutes * 60_000;
+  }
+  return reads;
+}
+const feedCamera = (reads: CameraRead[], start: Sighting[] = []) =>
+  reads.reduce((list, read) => applyCameraRead(list, read, 'check', () => String(nextId++)).sightings, start);
+
+const oneRoadReads = cameraDrive('TRK100', at(11, 0), [[5, 0, 10]]);
+const oneRoad = feedCamera(oneRoadReads);
+const oneRoadResult = assessVehicle(oneRoad);
+check(`Behind you 10 min on one road: ${oneRoadReads.length} reads stored`, `${oneRoad.length} sightings, 1 per zone`, `${oneRoadResult.zones} sightings, 1 per zone`);
+check('…counted as one encounter', oneRoadResult.encounters, 1);
+check('…just sharing your road, so no alarm', `${oneRoadResult.level} (${oneRoadResult.score.toFixed(1)})`, 'calm (0.0)');
+const throughTurns = assessVehicle(feedCamera(cameraDrive('TRK200', at(11, 0), [[1.5, 0, 3], [0, 1.5, 3], [-1.5, 0, 3], [0, 1.5, 3]])));
+check('Stays behind you through 3 turns in 12 min', `${throughTurns.level}, ${throughTurns.encounters} encounter`, 'alert, 1 encounter');
+const reappears = [...cameraDrive('TRK300', at(11, 0), [[1, 0, 2]]), ...cameraDrive('TRK300', at(11, 5), [[1, 0, 2]])];
+check('Out of view for 3 min, then back', assessVehicle(feedCamera(reappears)).encounters, 2);
+const loggedToo = [...feedCamera(cameraDrive('TRK400', at(11, 0), [[1, 0, 2]])), seen('TRK400', at(11, 1), 0.5, 0)];
+check('Manual log while the camera sees the same car', assessVehicle(loggedToo).encounters, 1);
 
 console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`);
 if (failures > 0) process.exit(1);

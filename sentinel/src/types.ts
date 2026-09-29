@@ -17,7 +17,12 @@ export interface Sighting {
   description?: string; // "Dark grey saloon"
   colour?: string;
   locationLabel?: string; // "High St / Mill Rd"
-  source: 'manual' | 'demo';
+  source: 'manual' | 'demo' | 'camera';
+  /**
+   * Camera sightings only: the last time the plate was read in this zone during
+   * this encounter. Manual and demo sightings are a single moment (seenAt).
+   */
+  lastSeenAt?: number;
   /** Set after an SDR ends with CLEAR — cleared sightings no longer count. */
   cleared?: boolean;
 }
@@ -30,6 +35,8 @@ export interface ThreatAssessment {
   level: ThreatLevel;
   /** Sightings that counted towards the score. */
   sightings: number;
+  /** Separate times it was seen. A camera counts a car that stays in view once. */
+  encounters: number;
   zones: number;
   /** Minutes between the first and last counted sighting. */
   minutes: number;

@@ -3,7 +3,7 @@
  *
  * HOW THE SCORE WORKS
  * Each vehicle earns evidence points from its sightings in the last 2 hours:
- *   +1 point for every time you see it again (repeat sightings)
+ *   +1 point for every separate time you see it again (repeat encounters)
  *   +1 point for every extra zone (~500 m square) you have seen it in
  * Points become a 0–10 score on a curve: 6 points = 9.0, and the score keeps
  * approaching 10 without ever reaching it.
@@ -22,6 +22,14 @@
  * The Build Companion's Day 8 checks:
  *   4 sightings, 4 zones, 20 minutes  → 3 + 3 = 6 points      → 9.0
  *   3 sightings along the same road   → 2 × 1/6 = 0.33 points → 1.2
+ *
+ * CAMERA READS (Phase 2)
+ * A rear camera reads a car in view several times a second, so the engine counts
+ * encounters, not reads. Reads less than 90 s apart are one encounter, however
+ * long it lasts. A car that stays behind you still earns a point for every new
+ * zone, so following you through turns raises the score, while sitting behind
+ * you on one straight road does not. A car that drops out of view and turns up
+ * again later starts a new encounter. Manual logs are one encounter each, as before.
  *
  * Every number used here lives in THRESHOLDS (src/constants/theme.ts).
  */
@@ -131,6 +139,87 @@ const zoneOf = (s: Sighting): string | null => (hasLocation(s) ? computeZoneId(s
 
 const roundTo1 = (value: number) => Math.round(value * 10) / 10;
 
+/** When a sighting ended: camera sightings last while the plate keeps being read. */
+const endOf = (s: Sighting) => s.lastSeenAt ?? s.seenAt;
+
+/**
+ * How many separate times the vehicle was seen. Every manual or demo log is its
+ * own encounter, because you logged it on purpose. A camera sighting, or a manual
+ * log made while the camera still has the car in view, continues the current
+ * encounter when it starts within ENCOUNTER_GAP_S of that encounter's last read.
+ */
+export function countEncounters(sightings: readonly Sighting[]): number {
+  const gapMs = THRESHOLDS.ENCOUNTER_GAP_S * 1000;
+  let encounters = 0;
+  let end = -Infinity;
+  let includesCamera = false;
+  for (const s of [...sightings].sort((a, b) => a.seenAt - b.seenAt)) {
+    const isCamera = s.source === 'camera';
+    if ((isCamera || includesCamera) && s.seenAt - end <= gapMs) {
+      end = Math.max(end, endOf(s));
+      includesCamera ||= isCamera;
+    } else {
+      encounters++;
+      end = endOf(s);
+      includesCamera = isCamera;
+    }
+  }
+  return encounters;
+}
+
+/** One plate read from the rear camera (Phase 2). */
+export interface CameraRead {
+  plate: string;
+  seenAt: number;
+  /** Your position when the plate was read. */
+  latitude: number | null;
+  longitude: number | null;
+}
+
+/**
+ * Adds one rear-camera plate read to the list of sightings. While the plate keeps
+ * being read (gaps under ENCOUNTER_GAP_S) in the same zone, the read only extends
+ * that camera sighting's lastSeenAt. Entering a new zone, or reappearing after a
+ * gap, starts a new sighting. The result is one stored sighting per zone per
+ * encounter instead of thousands of rows.
+ */
+export function applyCameraRead(
+  sightings: readonly Sighting[],
+  read: CameraRead,
+  sessionId: string,
+  newId: () => string,
+): { sightings: Sighting[]; sighting: Sighting; created: boolean } {
+  const plate = normalizePlate(read.plate);
+  const zoneId =
+    read.latitude != null && read.longitude != null ? computeZoneId(read.latitude, read.longitude) : null;
+  let latest: Sighting | null = null;
+  for (const s of sightings) {
+    if (s.plate === plate && (latest === null || s.seenAt >= latest.seenAt)) latest = s;
+  }
+  if (
+    latest !== null &&
+    latest.source === 'camera' &&
+    !latest.cleared &&
+    latest.zoneId === zoneId &&
+    read.seenAt - endOf(latest) <= THRESHOLDS.ENCOUNTER_GAP_S * 1000
+  ) {
+    const extended: Sighting = { ...latest, lastSeenAt: Math.max(endOf(latest), read.seenAt) };
+    return { sightings: sightings.map((s) => (s === latest ? extended : s)), sighting: extended, created: false };
+  }
+  const created: Sighting = {
+    id: newId(),
+    sessionId,
+    plate,
+    seenAt: read.seenAt,
+    lastSeenAt: read.seenAt,
+    latitude: read.latitude,
+    longitude: read.longitude,
+    zoneId,
+    source: 'camera',
+  };
+  return { sightings: [...sightings, created], sighting: created, created: true };
+}
+
 /** Scores ONE vehicle from all of its sightings. */
 export function assessVehicle(sightings: readonly Sighting[], options: AssessOptions = {}): ThreatAssessment {
   const plate = sightings.length > 0 ? normalizePlate(sightings[0].plate) : '';
@@ -139,6 +228,7 @@ export function assessVehicle(sightings: readonly Sighting[], options: AssessOpt
     score: 0,
     level: 'calm',
     sightings: 0,
+    encounters: 0,
     zones: 0,
     minutes: 0,
     spreadKm: 0,
@@ -157,8 +247,8 @@ export function assessVehicle(sightings: readonly Sighting[], options: AssessOpt
   // Only the recent pattern counts, and sightings cleared by an SDR never count.
   const active = sightings.filter((s) => !s.cleared).sort((a, b) => a.seenAt - b.seenAt);
   if (active.length === 0) return result;
-  const latest = active[active.length - 1].seenAt;
-  const recent = active.filter((s) => latest - s.seenAt <= THRESHOLDS.PATTERN_WINDOW_MIN * 60_000);
+  const latest = Math.max(...active.map(endOf));
+  const recent = active.filter((s) => latest - endOf(s) <= THRESHOLDS.PATTERN_WINDOW_MIN * 60_000);
 
   // Known zones: a neighbour's car seen ten times outside your house is one
   // sighting. The same car ALSO turning up elsewhere still adds zones.
@@ -178,7 +268,8 @@ export function assessVehicle(sightings: readonly Sighting[], options: AssessOpt
   const r2 = computeR2(located);
   const corridor = isCorridor(located);
 
-  const repeats = counted.length - 1;
+  const encounters = countEncounters(counted);
+  const repeats = encounters - 1;
   const extraZones = Math.max(0, zones - 1);
   let points = corridor ? repeats * THRESHOLDS.CORRIDOR_POINT_WEIGHT : repeats + extraZones;
 
@@ -190,8 +281,8 @@ export function assessVehicle(sightings: readonly Sighting[], options: AssessOpt
   const heldBelowAlert = spreadKm < THRESHOLDS.MIN_SPREAD_KM && score >= THRESHOLDS.ALERT;
   if (heldBelowAlert) score = roundTo1(THRESHOLDS.ALERT - 0.1);
 
-  const minutes = Math.round((counted[counted.length - 1].seenAt - counted[0].seenAt) / 60_000);
-  const reasons = [`Seen ${counted.length}× in ${minutes} min`];
+  const minutes = Math.round((Math.max(...counted.map(endOf)) - counted[0].seenAt) / 60_000);
+  const reasons = [`Seen ${encounters}× in ${minutes} min`];
   if (zones > 1 && !corridor) reasons.push(`${zones} different zones`);
   if (corridor) reasons.push('Lined up along your road — counts much less');
   if (recent.length > counted.length) reasons.push('Repeat sightings in a known zone count once');
@@ -204,6 +295,7 @@ export function assessVehicle(sightings: readonly Sighting[], options: AssessOpt
     score,
     level: threatLevelForScore(score),
     sightings: counted.length,
+    encounters,
     zones,
     minutes,
     spreadKm: roundTo1(spreadKm),
@@ -233,5 +325,5 @@ export function assessAllVehicles(sightings: readonly Sighting[], options: Asses
 
 /** The notification-strip line: "KSJ·449 · 3 SIGHTINGS · 34 MIN · 2.3KM SPREAD". */
 export function describeThreat(a: ThreatAssessment): string {
-  return `${formatPlate(a.plate)} · ${a.sightings} SIGHTINGS · ${a.minutes} MIN · ${a.spreadKm.toFixed(1)}KM SPREAD`;
+  return `${formatPlate(a.plate)} · ${a.encounters} SIGHTINGS · ${a.minutes} MIN · ${a.spreadKm.toFixed(1)}KM SPREAD`;
 }

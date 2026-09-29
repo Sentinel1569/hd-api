@@ -16,7 +16,7 @@ import { create } from 'zustand';
 import { THRESHOLDS, type ThreatLevel } from '../constants/theme';
 import * as db from '../db/database';
 import { DEMO_ORIGIN, DEMO_PLATE, demoPosition } from '../engine/demo';
-import { assessAllVehicles, computeZoneId, normalizePlate } from '../engine/patternDetection';
+import { applyCameraRead, assessAllVehicles, computeZoneId, normalizePlate } from '../engine/patternDetection';
 import type { Sighting, ThreatAssessment, UserLocation } from '../types';
 
 export interface LogVehicleInput {
@@ -43,6 +43,8 @@ export interface SentinelState {
   logVehicle: (input: LogVehicleInput) => Promise<ThreatAssessment | undefined>;
   /** Day 9 test button: logs KSJ·449 at the next corner of a 1.2 km square. */
   logDemoSighting: () => Promise<ThreatAssessment | undefined>;
+  /** Phase 2: call for every plate the rear camera's plate reader reports. */
+  logCameraRead: (plate: string) => Promise<ThreatAssessment | undefined>;
   setUserLocation: (location: UserLocation) => void;
   /** Day 7 test buttons only. The next sighting recalculates the real state. */
   setThreatState: (level: ThreatLevel) => void;
@@ -66,6 +68,11 @@ const warn = (what: string) => (error: unknown) => console.warn(`[SENTINEL] ${wh
 // logged in the first second can't land in a session that is then replaced.
 let restoring: Promise<void> | null = null;
 
+// A car in view is read several times a second. New camera sightings are saved
+// at once; one that is only being extended is saved at most every 15 seconds.
+const CAMERA_SAVE_EVERY_MS = 15_000;
+const cameraSavedAt = new Map<string, number>();
+
 export const useSentinelStore = create<SentinelState>()((set, get) => {
   /** Applies changes and re-scores every vehicle. */
   const update = (changes: Partial<Pick<SentinelState, 'sightings' | 'whitelist' | 'knownZones'>>) => {
@@ -74,10 +81,14 @@ export const useSentinelStore = create<SentinelState>()((set, get) => {
     set({ ...changes, threats, threatState: threats[0]?.level ?? 'calm' });
   };
 
-  const addSighting = async (sighting: Omit<Sighting, 'id' | 'sessionId'>) => {
+  const ensureSession = async () => {
     if (restoring) await restoring;
     if (!get().sessionId) await get().startSession();
-    const saved: Sighting = { ...sighting, id: newId(), sessionId: get().sessionId as string };
+    return get().sessionId as string;
+  };
+
+  const addSighting = async (sighting: Omit<Sighting, 'id' | 'sessionId'>) => {
+    const saved: Sighting = { ...sighting, id: newId(), sessionId: await ensureSession() };
     update({ sightings: [...get().sightings, saved] });
     await db.saveSighting(saved).catch(warn('Saving a sighting'));
     return get().threats.find((t) => t.plate === saved.plate);
@@ -124,6 +135,7 @@ export const useSentinelStore = create<SentinelState>()((set, get) => {
       const startedAt = Date.now();
       set({ sessionId: id });
       update({ sightings: [] });
+      cameraSavedAt.clear();
       if (previous) await db.endSession(previous, startedAt).catch(warn('Ending the last session'));
       await db.createSession(id, startedAt).catch(warn('Starting a session'));
     },
@@ -157,6 +169,27 @@ export const useSentinelStore = create<SentinelState>()((set, get) => {
         description: 'Demo vehicle',
         source: 'demo',
       });
+    },
+
+    logCameraRead: async (plate) => {
+      const normalised = normalizePlate(plate);
+      if (!normalised) return undefined;
+      const sessionId = await ensureSession();
+      const here = get().userLocation;
+      const result = applyCameraRead(
+        get().sightings,
+        { plate: normalised, seenAt: Date.now(), latitude: here?.latitude ?? null, longitude: here?.longitude ?? null },
+        sessionId,
+        newId,
+      );
+      update({ sightings: result.sightings });
+      const { sighting } = result;
+      const readAt = sighting.lastSeenAt ?? sighting.seenAt;
+      if (result.created || readAt - (cameraSavedAt.get(sighting.id) ?? 0) >= CAMERA_SAVE_EVERY_MS) {
+        cameraSavedAt.set(sighting.id, readAt);
+        await db.saveSighting(sighting).catch(warn('Saving a camera sighting'));
+      }
+      return get().threats.find((t) => t.plate === normalised);
     },
 
     setUserLocation: (location) => set({ userLocation: location }),

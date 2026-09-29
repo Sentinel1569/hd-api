@@ -21,9 +21,9 @@ export const ENCRYPT_DATABASE = false;
 const DATABASE_NAME = ENCRYPT_DATABASE ? 'sentinel-secure.db' : 'sentinel.db';
 const KEY_NAME = 'sentinel.db.key';
 
-// To change tables later: add SCHEMA_V2, bump SCHEMA_VERSION, and add an
-// `if (version < 2)` step in openDatabase(). Never edit SCHEMA_V1 once shipped.
-const SCHEMA_VERSION = 1;
+// To change tables later: add SCHEMA_V3, bump SCHEMA_VERSION, and add an
+// `if (version < 3)` step in openDatabase(). Never edit a schema once shipped.
+const SCHEMA_VERSION = 2;
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS sessions (
   id         TEXT PRIMARY KEY NOT NULL,
@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS known_zones (
 );
 `;
 
+// Version 2: camera sightings remember when the plate was last read (Phase 2).
+const SCHEMA_V2 = 'ALTER TABLE sightings ADD COLUMN last_seen_at INTEGER;';
+
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 /** Opens the database, creating the tables the first time. Safe to call often. */
@@ -84,6 +87,7 @@ async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
   const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
   const version = row?.user_version ?? 0;
   if (version < 1) await db.execAsync(SCHEMA_V1);
+  if (version < 2) await db.execAsync(SCHEMA_V2);
   if (version < SCHEMA_VERSION) await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   return db;
 }
@@ -139,6 +143,7 @@ interface SightingRow {
   session_id: string;
   plate: string;
   seen_at: number;
+  last_seen_at: number | null;
   latitude: number | null;
   longitude: number | null;
   zone_id: string | null;
@@ -154,13 +159,14 @@ const toSighting = (row: SightingRow): Sighting => ({
   sessionId: row.session_id,
   plate: row.plate,
   seenAt: row.seen_at,
+  lastSeenAt: row.last_seen_at ?? undefined,
   latitude: row.latitude,
   longitude: row.longitude,
   zoneId: row.zone_id,
   description: row.description ?? undefined,
   colour: row.colour ?? undefined,
   locationLabel: row.location_label ?? undefined,
-  source: row.source === 'demo' ? 'demo' : 'manual',
+  source: row.source === 'demo' || row.source === 'camera' ? row.source : 'manual',
   cleared: row.cleared === 1,
 });
 
@@ -168,12 +174,13 @@ export async function saveSighting(s: Sighting): Promise<void> {
   const db = await getDatabase();
   await db.runAsync(
     `INSERT OR REPLACE INTO sightings
-       (id, session_id, plate, seen_at, latitude, longitude, zone_id, description, colour, location_label, source, cleared)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, session_id, plate, seen_at, last_seen_at, latitude, longitude, zone_id, description, colour, location_label, source, cleared)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     s.id,
     s.sessionId,
     s.plate,
     s.seenAt,
+    s.lastSeenAt ?? null,
     s.latitude,
     s.longitude,
     s.zoneId,
